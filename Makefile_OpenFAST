@@ -1,0 +1,228 @@
+# --------------------------------------------------------------------------------
+# --- Main User Inputs
+# --------------------------------------------------------------------------------
+WSL=1      # 1: force some linux options
+
+RELEASE=0  # 0: debug, 1:release
+DOUBLE=0   # 0: single, 1:double
+DRIVER=5   # 6: BeamDyn, 5: FAST.Farm, 4: HydroDyn, 3: UA, 22: adi_c, 2: aerodyn, 1: subdyn, 0: openfast
+QUICK=0    # 0: slow compile, 1: quick compile
+CTEST=2    # 0: regular tests, 1: ctest, 2: temporary tests
+UTEST=0    # 0: no unit test, 1:unittest
+
+# TEST_DIR = /mnt/c/Work/Student_projects/FAST.Farm/simulations-shear/task1_uniform_aligned
+TEST_DIR = C:/Work/Student_projects/FAST.Farm/simulations-shear/task1_uniform_aligned
+TEST_FILE= input_curl.fstf
+
+
+
+# --------------------------------------------------------------------------------
+# --- Setting up MAKE, CMAKE, CTEST, and File/directory names
+# --------------------------------------------------------------------------------
+MAKE=make
+MAKE_ARGS=
+# MAKE_ARGS+=VERBOSE=1
+MAKE_ARGS+=-j 16 --no-print-directory  
+
+MAKE_TARGET=TODO-MAKE_TARGET
+DRIVEREXE=TODO-DRIVEREXE
+CTEST_ARGS=
+UTEST_EXE=dummy
+
+
+ifeq ($(WSL),1)
+SLASH=/
+DATE:=$(shell date +"%Y-%m-%d")
+else
+SLASH=\\
+DATE:=$(shell C:/Bin/UnxUtils/usr/local/wbin/date.exe +"%Y-%m-%d")
+endif
+
+
+
+ifeq ($(strip $(DRIVER)),1)
+    MAKE_TARGET= subdyn_driver
+    DRIVEREXE=$(BUILD_DIR)\modules\subdyn\subdyn_driver$(EXEEXT)
+    CTEST_ARGS=-R SD_* --verbose --stop-on-failure --extra-verbose
+    CTEST_ARGS=-VV -j7 -R SD_
+else ifeq ($(strip $(DRIVER)),2)
+    MAKE_TARGET= aerodyn_driver
+    DRIVEREXE=$(BUILD_DIR)\modules\aerodyn\aerodyn_driver$(EXEEXT)
+    CTEST_ARGS=-R ^ad_* --verbose --stop-on-failure --extra-verbose
+#     CTEST_ARGS= --verbose --stop-on-failure --extra-verbose
+ifeq ($(strip $(UTEST)),1)
+    MAKE_TARGET+= fvw_utest
+    UTEST_EXE=$(BUILD_DIR)\unit_tests\aerodyn\fvw_utest
+endif
+else ifeq ($(strip $(DRIVER)),22)
+    MAKE_TARGET= aerodyn_inflow_c_binding
+    DRIVEREXE=$(BUILD_DIR)\modules\aerodyn\libaerodyn_inflow_c_binding.dll
+    CTEST_ARGS=-R py_ad* --verbose --stop-on-failure --extra-verbose
+else ifeq ($(strip $(DRIVER)),3)
+    MAKE_TARGET= unsteadyaero_driver
+    DRIVEREXE=$(BUILD_DIR)\modules\aerodyn\unsteadyaero_driver$(EXEEXT)
+    CTEST_ARGS=-R "^ua_*" --verbose --stop-on-failure --extra-verbose
+    CMAKE_ARGS+= -DCMAKE_Fortran_FLAGS="-DUA_OUTS=ON"
+else ifeq ($(strip $(DRIVER)),4)
+    MAKE_TARGET= hydrodyn_driver
+    DRIVEREXE=$(BUILD_DIR)\modules\hydrodyn\hydrodyn_driver$(EXEEXT)
+    CTEST_ARGS=-R hd_* --verbose --stop-on-failure --extra-verbose
+else ifeq ($(strip $(DRIVER)),5)
+    MAKE_TARGET= FAST.Farm
+    DRIVEREXE=$(BUILD_DIR)/glue-codes/fast-farm/FAST.Farm$(EXEEXT)
+    CMAKE_ARGS+=-DBUILD_FASTFARM:BOOL=ON
+    CTEST_ARGS= -L fastfarm --verbose --stop-on-failure --extra-verbose
+else ifeq ($(strip $(DRIVER)),6)
+    MAKE_TARGET= beamdyn_driver
+    DRIVEREXE=$(BUILD_DIR)\modules\beamdyn\beamdyn_driver$(EXEEXT)
+    CTEST_ARGS=-R bd_* --verbose --stop-on-failure --extra-verbose
+else
+    MAKE_TARGET= openfast
+    DRIVEREXE=$(BUILD_DIR)\glue-codes\openfast\openfast$(EXEEXT)
+#     CMAKE_ARGS+= -DCMAKE_Fortran_FLAGS="-DUA_OUTS=ON"
+    #CTEST_ARGS=-R "^HelicalWake_OLAF$$" --verbose --stop-on-failure --extra-verbose
+    #CTEST_ARGS=  -VV -j8 -L linear
+    CTEST_ARGS= --verbose --stop-on-failure --extra-verbose
+endif
+
+
+CMAKE_ARGS+= -DGENERATE_TYPES=ON
+CMAKE_ARGS+=-DOPENMP=ON  
+# CMAKE_ARGS+= -DCMAKE_Fortran_FLAGS=""
+# CMAKE_ARGS+= -DBUILD_TESTING=ON
+CMAKE_ARGS+= -DBUILD_TESTING=ON -DCTEST_RUN_VERBOSE_FLAG=ON -DCTEST_PLOT_ERRORS=ON 
+CMAKE_ARGS+= -DCMAKE_Fortran_FLAGS_DEBUG="-g -fcheck=all -fbacktrace"
+
+# CMAKE_ARGS+= -DCMAKE_Fortran_FLAGS="-DDBG_OUTS=ON"
+
+# --- UA
+# CMAKE_ARGS+= -DCMAKE_Fortran_FLAGS="-DUA_OUTS=ON -DAFI_USE_LINEAR_RE=TRUE 
+# CMAKE_ARGS+= -DCMAKE_Fortran_FLAGS="-DUA_OUTS=ON"
+# CMAKE_ARGS+= -DCMAKE_Fortran_FLAGS="-DUSE_DEFAULT_BLADE_SURFACE=ON"
+
+
+
+
+suffix=
+ifeq ($(WSL),1)
+suffix=-linux
+endif
+ifeq ($(strip $(DOUBLE)),1)
+    CMAKE_ARGS+= -DDOUBLE_PRECISION:BOOL=ON
+	suffix:=$(suffix)-double
+	EXE_SUFFIX_BASE=_x64d_
+else ifeq ($(strip $(DOUBLE)),0)
+    CMAKE_ARGS+= -DDOUBLE_PRECISION:BOOL=OFF
+	suffix:=$(suffix)-single
+	EXE_SUFFIX_BASE=_x64s_
+else
+    $(error Bad DOUBLE variable)
+endif
+ifeq ($(strip $(RELEASE)),1)
+    CMAKE_ARGS+= -DCMAKE_BUILD_TYPE=Release
+	suffix:=$(suffix)-release
+else ifeq ($(strip $(RELEASE)),0)
+    CMAKE_ARGS+= -DCMAKE_BUILD_TYPE=Debug
+	suffix:=$(suffix)-debug
+	EXE_SUFFIX_BASE:=$(EXE_SUFFIX_BASE)debug_
+else
+    $(error Bad RELEASE variable)
+endif
+BRANCH:= $(shell git rev-parse --abbrev-ref HEAD)
+BRANCH:= $(subst /,-,$(BRANCH))
+EXE_SUFFIX:=$(EXE_SUFFIX_BASE)$(BRANCH)_$(DATE)$(EXE_SUFFIX)
+DRIVEREXE2=$(basename $(notdir $(DRIVEREXE)))$(EXE_SUFFIX)$(EXEEXT)
+
+ifeq ($(OS),Windows_NT)
+	OS=Windows
+	CMAKE_ARGS:=$(CMAKE_ARGS) -G"MinGW Makefiles"
+	MAKE=make
+	# --- Using intel fortran and nmake
+	#suffix:=-nmake$(suffix)
+	#CMAKE_ARGS=$(CMAKE_ARGS) -G"NMake Makefiles"
+	
+	RMDIR=rmdir /S /Q
+	LIBEXT='.dll'
+	EXEEXT=.exe
+	#COPY=copy /Y
+	COPY=cp
+	SLASH=\\
+else
+    OS=$(shell uname -s)
+    ifeq ($(OS),Linux)
+		# ISSUE WITH CMAKE PICKING UP F95 TODO
+		FC=/usr/bin/gfortran
+		LIBEXT='.so'
+		LIBPRE='lib'
+    else ifeq ($(OS),Darwin)
+		LIBEXT='.dylib'
+    endif
+	RMDIR=rm -rf
+	COPY=cp
+endif
+COPY=cp
+BUILD_DIR=build$(suffix)
+BUILD_DOCDIR=build-doc
+# TEST_DIR := $(subst /,\\,$(TEST_DIR))
+
+
+# CMAKE_ARGS=  -G"MinGW Makefiles" -DCMAKE_BUILD_TYPE:STRING=DEBUG -DBUILD_SHARED_LIBS:BOOL=OFF \
+#     -DGENERATE_TYPES=ON -DVARIABLE_TRACKING=OFF -DBUILD_TESTING:BOOL=ON -DCTEST_PLOT_ERRORS:BOOL=ON 
+
+
+# --------------------------------------------------------------------------------
+# --- MAIN RULES 
+# --------------------------------------------------------------------------------
+
+all: compile copy test
+# all: compile test
+
+$(BUILD_DIR):
+	@echo "------------------------------------------------------------"
+	mkdir $(BUILD_DIR)
+
+compile: $(BUILD_DIR)
+	@echo "------------------------------------------------------------"
+	@echo "---- Compiling $(MAKE_TARGET)$(EXE_SUFFIX)  in: $(BUILD_DIR)"
+	@echo "------------------------------------------------------------"
+ifeq ($(strip $(QUICK)),1)
+	cd $(BUILD_DIR) && $(MAKE) $(MAKE_ARGS) $(MAKE_TARGET)
+else
+	cd $(BUILD_DIR) && cmake $(CMAKE_ARGS) ../openfast-ff-shearveer && $(MAKE) $(MAKE_ARGS) $(MAKE_TARGET)
+endif
+
+clean:
+	cd $(BUILD_DIR) && $(MAKE) clean
+
+copy:
+	echo "Running: $(COPY) $(DRIVEREXE) $(basename $(notdir $(DRIVEREXE)))$(EXE_SUFFIX)$(EXEEXT)"
+	@echo "---------------------------------------------------"
+	$(COPY) $(DRIVEREXE) $(basename $(notdir $(DRIVEREXE)))$(EXE_SUFFIX)$(EXEEXT)
+	$(COPY) $(DRIVEREXE) $(TEST_DIR)$(SLASH)$(basename $(notdir $(DRIVEREXE)))$(EXE_SUFFIX)$(EXEEXT)
+
+test:
+ifeq ($(strip $(UTEST)),1)
+	@echo "------------------- UNIT TESTS ---------------------------------"
+	./$(UTEST_EXE)
+endif
+ifeq ($(strip $(CTEST)),1)
+	@echo "------------------- CTEST --------------------------------------"
+	cd "$(BUILD_DIR)" && ctest $(CTEST_ARGS)
+else ifeq ($(strip $(CTEST)),0)
+	make -C $(TEST_DIR) 
+else
+	@echo "------------------- USER TESTS (CTEST=2) -----------------------"
+	cd $(TEST_DIR) && ./$(DRIVEREXE2) $(TEST_FILE)
+endif
+
+test2:
+	cd $(TEST_DIR)/.. && python PostPro.py
+
+$(BUILD_DOCDIR):
+	@echo "------------------------------------------------------------"
+	mkdir $(BUILD_DOCDIR)
+
+doc: $(BUILD_DOCDIR)
+	cd $(BUILD_DOCDIR) && cmake -DBUILD_DOCUMENTATION=ON ..  && $(MAKE) sphinx-pdf
+
+

@@ -1156,13 +1156,22 @@ contains
 
          rhs = 0.0_ReKi
 
-         ! Slopes definition
-         SyU = 0.0_ReKi
-         SzU = 0.0_ReKi
-         SyV = 0.0_ReKi
-         SzV = 0.0_ReKi
-         SyW = 0.0_ReKi
-         SzW = 0.0_ReKi
+         ! Offload the slopes here
+         if (allocated(u%SV_Slopes)) then
+            SyU = u%SV_Slopes(1,i-1)
+            SzU = u%SV_Slopes(2,i-1)
+            SyV = u%SV_Slopes(3,i-1)
+            SzV = u%SV_Slopes(4,i-1)
+            SyW = u%SV_Slopes(5,i-1)
+            SzW = u%SV_Slopes(6,i-1)
+         else
+            SyU = 0.0_ReKi
+            SzU = 0.0_ReKi
+            SyV = 0.0_ReKi
+            SzV = 0.0_ReKi
+            SyW = 0.0_ReKi
+            SzW = 0.0_ReKi
+         endif
 
          ! d(nu)/dy and d(nu)/dz
          call gradient_y( m%vt_tot2(:,:,i-1), p%dr, m%dnu_dy(:,:,i-1) )
@@ -1327,22 +1336,22 @@ contains
       ! The quantities in these loops are all at time [n], so we need to compute prior to updating the states to [n+1] (loop in reversed)
       do i = maxPln, 1, -1  
 
-         ! offload the slopes here
-         !SyU = u%SV_Slopes(1,i-1)
-         !SzU = u%SV_Slopes(2,i-1)
-
-         !SyV = u%SV_Slopes(3,i-1)
-         !SzV = u%SV_Slopes(4,i-1)
-
-         !SyW = u%SV_Slopes(5,i-1)
-         !SzW = u%SV_Slopes(6,i-1)
-
-         SyU = 0.0_ReKi
-         SzU = 0.0_ReKi
-         SyV = 0.0_ReKi
-         SzV = 0.0_ReKi
-         SyW = 0.0_ReKi
-         SzW = 0.0_ReKi
+         ! Offload the slopes here
+         if (allocated(u%SV_Slopes)) then
+            SyU = u%SV_Slopes(1,i-1)
+            SzU = u%SV_Slopes(2,i-1)
+            SyV = u%SV_Slopes(3,i-1)
+            SzV = u%SV_Slopes(4,i-1)
+            SyW = u%SV_Slopes(5,i-1)
+            SzW = u%SV_Slopes(6,i-1)
+         else
+            SyU = 0.0_ReKi
+            SzU = 0.0_ReKi
+            SyV = 0.0_ReKi
+            SzV = 0.0_ReKi
+            SyW = 0.0_ReKi
+            SzW = 0.0_ReKi
+         endif
 
          ! NOTE: we cannot use data at i here since positions of planes have not been updated yet
          dx = abs(dot_product(xd%xhat_plane(:,i-1),xd%V_plane_filt(:,i-1))*p%DT_low)

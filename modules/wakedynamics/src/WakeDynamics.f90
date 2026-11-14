@@ -1561,6 +1561,123 @@ contains
    end subroutine updateVelocityCartesianFE
 
 
+!----------------------------------------------------------------------------------------------------------------------------------
+!> Calculates transverse wake velocities from continuity using the
+!> two-dimensional free-space Green's function.
+!>
+!> The Poisson equation is:
+!>     d2(phi)/dy2 + d2(phi)/dz2 = -(dVx/dx)
+!>
+!> The transverse velocities are:
+!>     Vy = d(phi)/dy
+!>     Vz = d(phi)/dz
+!>
+!> Uses direct convolution (no FFT).
+!>
+!> Inputs:
+!>     Vx_old  - Axial velocity on the upstream plane
+!>     Vx_new  - Axial velocity on the downstream plane
+!>     dx      - Distance between axial planes
+!>     dy      - Grid spacing in y
+!>     dz      - Grid spacing in z
+!>
+!> Outputs:
+!>     Vy      - Transverse velocity in y
+!>     Vz      - Transverse velocity in z
+!----------------------------------------------------------------------------------------------------------------------------------
+subroutine solveTransverseVelocityGreen(Vx_old, Vx_new, dx, dy, dz, Vy, Vz)
+
+   implicit none
+
+   ! Inputs
+   real(ReKi), intent(in) :: Vx_old(:,:)
+   real(ReKi), intent(in) :: Vx_new(:,:)
+   real(ReKi), intent(in) :: dx, dy, dz
+
+   ! Outputs
+   real(ReKi), intent(out) :: Vy(:,:), Vz(:,:)
+
+   ! Local variables
+   integer(IntKi) :: Ny, Nz
+   integer(IntKi) :: iy, iz, jy, jz
+
+   real(ReKi) :: pi
+   real(ReKi) :: dy_sep, dz_sep
+   real(ReKi) :: r2
+   real(ReKi) :: source_value
+   real(ReKi) :: kernel_factor
+
+   real(ReKi), allocatable :: source(:,:)
+
+   ! Grid dimensions
+   Ny = size(Vx_old,1)
+   Nz = size(Vx_old,2)
+
+   ! Initialize outputs
+   Vy = 0.0_ReKi
+   Vz = 0.0_ReKi
+
+   ! Check dimensions and grid spacing
+   if (size(Vx_new,1) /= Ny .or. size(Vx_new,2) /= Nz) return
+   if (size(Vy,1) /= Ny .or. size(Vy,2) /= Nz) return
+   if (size(Vz,1) /= Ny .or. size(Vz,2) /= Nz) return
+   if (dx <= 0.0_ReKi .or. dy <= 0.0_ReKi .or. dz <= 0.0_ReKi) return
+
+   pi = acos(-1.0_ReKi)
+
+   allocate(source(Ny,Nz))
+
+   ! Continuity source term:
+   !     S = -(dVx/dx)
+   do iz = 1, Nz
+      do iy = 1, Ny
+         source(iy,iz) = -(Vx_new(iy,iz) - Vx_old(iy,iz)) / dx
+      end do
+   end do
+
+   ! Direct convolution with the derivatives of the Green's function:
+   !
+   !     dG/dy = (1/(2*pi)) * (y-y') / ((y-y')**2 + (z-z')**2)
+   !
+   !     dG/dz = (1/(2*pi)) * (z-z') / ((y-y')**2 + (z-z')**2)
+   !
+   !     Vy = integral integral (dG/dy) * S * dy' * dz'
+   !     Vz = integral integral (dG/dz) * S * dy' * dz'
+   !
+   ! The singular self-cell contribution is zero by symmetry.
+
+   do iz = 1, Nz
+      do iy = 1, Ny
+
+         do jz = 1, Nz
+            do jy = 1, Ny
+
+               dy_sep = real(iy-jy,ReKi) * dy
+               dz_sep = real(iz-jz,ReKi) * dz
+
+               r2 = dy_sep*dy_sep + dz_sep*dz_sep
+
+               if (r2 > 0.0_ReKi) then
+
+                  source_value = source(jy,jz)
+
+                  kernel_factor = source_value * dy * dz / (2.0_ReKi*pi*r2)
+
+                  Vy(iy,iz) = Vy(iy,iz) + kernel_factor * dy_sep
+                  Vz(iy,iz) = Vz(iy,iz) + kernel_factor * dz_sep
+
+               end if
+
+            end do
+         end do
+
+      end do
+   end do
+
+   deallocate(source)
+
+end subroutine solveTransverseVelocityGreen
+
    subroutine Abort(Message)
       character(len=*), intent(in) :: Message
       call SetErrStat( ErrID_Fatal, Message, errStat, errMsg, 'WD_UpdateStates')

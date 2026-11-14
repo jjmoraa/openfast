@@ -376,6 +376,150 @@ subroutine ThomasAlgorithm(nr, a, b, c, d, x, errStat, errMsg)
 
 end subroutine ThomasAlgorithm
 
+!----------------------------------------------------------------------------------------------------------------------------------
+!> This subroutine solves the pentadiagonal linear system for x() using the PTRANS-I algorithm
+subroutine PentadiagonalSolver(nr, a, b, c, d, e, f, x, errStat, errMsg)
+
+   integer(IntKi),      intent(in   ) :: nr                 !< Number of points in the finite-difference grid
+   real(ReKi),          intent(in   ) :: a(0:)              !< Second subdiagonal
+   real(ReKi),          intent(in   ) :: b(0:)              !< First subdiagonal
+   real(ReKi),          intent(in   ) :: c(0:)              !< Main diagonal
+   real(ReKi),          intent(in   ) :: d(0:)              !< First superdiagonal
+   real(ReKi),          intent(in   ) :: e(0:)              !< Second superdiagonal
+   real(ReKi),          intent(in   ) :: f(0:)              !< Right-hand side
+   real(ReKi),          intent(  out) :: x(0:)              !< Solution of the linear solve
+   integer(IntKi),      intent(  out) :: errStat            !< Error status of the operation
+   character(*),        intent(  out) :: errMsg             !< Error message if errStat /= ErrID_None
+
+   real(ReKi)                         :: alpha(0:nr-1)
+   real(ReKi)                         :: beta(0:nr-1)
+   real(ReKi)                         :: gamma(0:nr-1)
+   real(ReKi)                         :: mu(0:nr-1)
+   real(ReKi)                         :: z(0:nr-1)
+   real(ReKi)                         :: scale
+   real(ReKi)                         :: pivotTol
+   integer(IntKi)                     :: i
+   character(*), parameter            :: RoutineName = 'PentadiagonalSolver'
+
+   errStat = ErrID_None
+   errMsg  = ''
+
+   ! Assumes all arrays contain at least nr entries, indexed from 0 to nr-1.
+   !
+   ! The system is defined as:
+   !
+   !   a(i)*x(i-2) + b(i)*x(i-1) + c(i)*x(i)
+   !                 + d(i)*x(i+1) + e(i)*x(i+2) = f(i)
+   !
+   ! Coefficients outside the matrix boundaries are zero.
+   !
+   ! PTRANS-I transformation followed by backward substitution.
+   ! The input diagonals and right-hand side are not modified.
+
+   if (nr < 1) then
+      call SetErrStat(ErrID_Fatal, 'Pentadiagonal system must contain at least one equation.', &
+                      errStat, errMsg, RoutineName)
+      return
+   end if
+
+   ! Check the coefficient scale to detect numerically small pivots.
+
+   scale = max(maxval(abs(a(0:nr-1))), maxval(abs(b(0:nr-1))), &
+               maxval(abs(c(0:nr-1))), maxval(abs(d(0:nr-1))), &
+               maxval(abs(e(0:nr-1))))
+
+   if (scale == 0.0_ReKi) then
+      call SetErrStat(ErrID_Fatal, 'Pentadiagonal matrix is identically zero.', &
+                      errStat, errMsg, RoutineName)
+      return
+   end if
+
+   pivotTol = 100.0_ReKi * epsilon(1.0_ReKi) * scale
+
+   !...............................................................................................................................
+   ! PTRANS-I: Transformation
+   !...............................................................................................................................
+
+   ! First equation.
+
+   mu(0) = c(0)
+
+   if (abs(mu(0)) <= pivotTol) then
+      call SetErrStat(ErrID_Fatal, 'PTRANS-I failed: first pivot is zero or numerically small.', &
+                      errStat, errMsg, RoutineName)
+      return
+   end if
+
+   alpha(0) = d(0) / mu(0)
+   beta(0)  = e(0) / mu(0)
+   z(0)     = f(0) / mu(0)
+
+   ! Second equation.
+
+   if (nr >= 2) then
+
+      gamma(1) = b(1)
+      mu(1)    = c(1) - alpha(0)*gamma(1)
+
+      if (abs(mu(1)) <= pivotTol) then
+         call SetErrStat(ErrID_Fatal, 'PTRANS-I failed: second pivot is zero or numerically small.', &
+                         errStat, errMsg, RoutineName)
+         return
+      end if
+
+      alpha(1) = (d(1) - beta(0)*gamma(1)) / mu(1)
+      beta(1)  = e(1) / mu(1)
+      z(1)     = (f(1) - z(0)*gamma(1)) / mu(1)
+
+   end if
+
+   ! Remaining equations.
+
+   do i = 2, nr-1
+
+      gamma(i) = b(i) - alpha(i-2)*a(i)
+
+      mu(i) = c(i) &
+            - beta(i-2)*a(i) &
+            - alpha(i-1)*gamma(i)
+
+      if (abs(mu(i)) <= pivotTol) then
+         call SetErrStat(ErrID_Fatal, 'PTRANS-I failed: a pivot is zero or numerically small.', &
+                         errStat, errMsg, RoutineName)
+         return
+      end if
+
+      alpha(i) = (d(i) - beta(i-1)*gamma(i)) / mu(i)
+      beta(i)  = e(i) / mu(i)
+
+      z(i) = (f(i) &
+            - z(i-2)*a(i) &
+            - z(i-1)*gamma(i)) / mu(i)
+
+   end do
+
+   !...............................................................................................................................
+   ! PTRANS-I: Backward substitution
+   !...............................................................................................................................
+
+   x(nr-1) = z(nr-1)
+
+   if (nr >= 2) then
+
+      x(nr-2) = z(nr-2) - alpha(nr-2)*x(nr-1)
+
+      do i = nr-3, 0, -1
+
+         x(i) = z(i) &
+              - alpha(i)*x(i+1) &
+              - beta(i)*x(i+2)
+
+      end do
+
+   end if
+
+end subroutine PentadiagonalSolver
+
 !----------------------------------------------------------------------------------------------------------------------------------   
 !> This routine is called at the start of the simulation to perform initialization steps.
 !! The parameters are set here and not changed during the simulation.

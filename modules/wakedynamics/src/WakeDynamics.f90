@@ -1289,6 +1289,14 @@ contains
       logical :: debug_this_call
       logical :: debug_dir_exists
 
+      logical, save :: continuity_test_done = .false.
+
+      ! First-frame unit test
+      if (.not. continuity_test_done) then
+         call testTransverseVelocityGreen()
+         continuity_test_done = .true.
+      endif
+
       Ny = 2*p%NumRadii - 1
       Nz = 2*p%NumRadii - 1
       N = Ny*Nz
@@ -1897,6 +1905,136 @@ subroutine solveTransverseVelocityGreen(Vx_old, Vx_new, dx, dy, dz, Vy, Vz)
    deallocate(source)
 
 end subroutine solveTransverseVelocityGreen
+
+
+subroutine testTransverseVelocityGreen()
+
+   implicit none
+
+   integer(IntKi), parameter :: nr = 20
+   integer(IntKi), parameter :: Ny = 2*nr - 1
+   integer(IntKi), parameter :: Nz = 2*nr - 1
+
+   integer(IntKi) :: iy, iz
+   integer(IntKi) :: debug_unit
+   integer(IntKi) :: ios
+
+   real(ReKi), parameter :: Ly = 1.0_ReKi
+   real(ReKi), parameter :: Lz = 1.0_ReKi
+   real(ReKi), parameter :: A = 1.0_ReKi
+   real(ReKi), parameter :: dx = 1.0_ReKi
+
+   real(ReKi) :: dy, dz
+   real(ReKi) :: y_coord, z_coord
+   real(ReKi) :: Y_shift, Z_shift
+   real(ReKi) :: pi
+   real(ReKi) :: lap_phi
+
+   real(ReKi), allocatable :: Vx_old(:,:), Vx_new(:,:)
+   real(ReKi), allocatable :: Vy(:,:), Vz(:,:)
+
+   pi = acos(-1.0_ReKi)
+
+   dy = Ly / real(Ny-1,ReKi)
+   dz = Lz / real(Nz-1,ReKi)
+
+   allocate(Vx_old(Ny,Nz), Vx_new(Ny,Nz))
+   allocate(Vy(Ny,Nz), Vz(Ny,Nz))
+
+   Vx_old = 0.0_ReKi
+   Vx_new = 0.0_ReKi
+
+   ! -----------------------------------------------
+   ! Generate the sin^2 test case
+   ! -----------------------------------------------
+
+   do iz = 1, Nz
+      do iy = 1, Ny
+
+         y_coord = -Ly/2.0_ReKi + real(iy-1,ReKi)*dy
+         z_coord = -Lz/2.0_ReKi + real(iz-1,ReKi)*dz
+
+         Y_shift = y_coord + Ly/2.0_ReKi
+         Z_shift = z_coord + Lz/2.0_ReKi
+
+         lap_phi = &
+            -2.0_ReKi*pi**2*A * &
+            (sin(pi*Y_shift/Ly)**2 - cos(pi*Y_shift/Ly)**2) * &
+            sin(pi*Z_shift/Lz)**2 / Ly**2 &
+            -2.0_ReKi*pi**2*A * &
+            (sin(pi*Z_shift/Lz)**2 - cos(pi*Z_shift/Lz)**2) * &
+            sin(pi*Y_shift/Ly)**2 / Lz**2
+
+         ! Your solver defines source = -(Vx_new - Vx_old)/dx
+         Vx_new(iy,iz) = -dx*lap_phi
+
+      enddo
+   enddo
+
+   ! -----------------------------------------------
+   ! Run continuity solver
+   ! -----------------------------------------------
+
+   call solveTransverseVelocityGreen( &
+      Vx_old, Vx_new, dx, dy, dz, Vy, Vz)
+
+   ! -----------------------------------------------
+   ! Dump inputs and outputs
+   ! -----------------------------------------------
+
+   open(newunit=debug_unit, file='debug/continuity_debug.txt', &
+        status='replace', action='write', iostat=ios)
+
+   if (ios /= 0) then
+      print *, 'ERROR: Could not open continuity_debug.txt'
+      deallocate(Vx_old, Vx_new, Vy, Vz)
+      return
+   endif
+
+   write(debug_unit,*) 'TRANSVERSE VELOCITY GREEN SOLVER TEST'
+   write(debug_unit,*) 'Ny, Nz = ', Ny, Nz
+   write(debug_unit,*) 'dx, dy, dz = ', dx, dy, dz
+
+   write(debug_unit,*)
+   write(debug_unit,*) '--- Vx_old ---'
+   do iz = 1, Nz
+      do iy = 1, Ny
+         write(debug_unit,*) iy, iz, Vx_old(iy,iz)
+      enddo
+   enddo
+
+   write(debug_unit,*)
+   write(debug_unit,*) '--- Vx_new ---'
+   do iz = 1, Nz
+      do iy = 1, Ny
+         write(debug_unit,*) iy, iz, Vx_new(iy,iz)
+      enddo
+   enddo
+
+   write(debug_unit,*)
+   write(debug_unit,*) '--- Vy ---'
+   do iz = 1, Nz
+      do iy = 1, Ny
+         write(debug_unit,*) iy, iz, Vy(iy,iz)
+      enddo
+   enddo
+
+   write(debug_unit,*)
+   write(debug_unit,*) '--- Vz ---'
+   do iz = 1, Nz
+      do iy = 1, Ny
+         write(debug_unit,*) iy, iz, Vz(iy,iz)
+      enddo
+   enddo
+
+   close(debug_unit)
+
+   print *, 'Continuity test completed.'
+   print *, 'Results written to continuity_debug.txt'
+
+   deallocate(Vx_old, Vx_new, Vy, Vz)
+
+end subroutine testTransverseVelocityGreen
 
    subroutine Abort(Message)
       character(len=*), intent(in) :: Message

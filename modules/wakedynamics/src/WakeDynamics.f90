@@ -1249,6 +1249,7 @@ contains
 
 
 
+
    !>
    subroutine updateVelocityCartesianFD()
 
@@ -1256,9 +1257,13 @@ contains
       integer(intKi) :: II, JJ
       integer(intKi) :: N
       integer(intKi) :: info
-      real(ReKi), allocatable :: AA(:,:), rhs(:)
-      integer(IntKi), allocatable :: ipiv(:)
       integer(intKi) :: iyMin, izMin
+      integer(intKi) :: Ny, Nz
+      integer(intKi) :: KL, KU, LDAB
+
+      real(ReKi), allocatable :: AB(:,:), rhs(:)
+      integer(IntKi), allocatable :: ipiv(:)
+
       real(ReKi) :: a, b, c, d, e
       real(ReKi) :: rhs_term
       real(ReKi) :: advection
@@ -1267,7 +1272,6 @@ contains
       real(ReKi) :: SyU, SzU, SyV, SzV, SyW, SzW
       real(ReKi) :: UU, VV, WW
       real(ReKi) :: xp
-      integer(intKi) :: Ny, Nz
 
       ! Debug variables
       integer :: debug_unit
@@ -1289,21 +1293,26 @@ contains
       Nz = 2*p%NumRadii - 1
       N = Ny*Nz
 
-      ! Allocate matrix and vectors
-      allocate(AA(N,N))
+      ! --------------------------------------------------
+      ! BANDED MATRIX STORAGE
+      ! --------------------------------------------------
+
+      KL = Ny
+      KU = Ny
+      LDAB = 2*KL + KU + 1
+
+      allocate(AB(LDAB,N))
       allocate(rhs(N))
       allocate(ipiv(N))
 
       ! --------------------------------------------------
       ! SELECT DEBUG CAPTURES
-      ! Two consecutive calls at 0, 3, and 6 seconds
       ! --------------------------------------------------
 
       debug_this_call = .FALSE.
 
       if (debug_capture_next) then
 
-         ! Second frame in the current pair
          debug_this_call = .TRUE.
          debug_capture_next = .FALSE.
          debug_target_index = debug_target_index + 1
@@ -1312,7 +1321,6 @@ contains
 
          if (debug_elapsed_time >= debug_target_times(debug_target_index)) then
 
-            ! First frame in the current pair
             debug_this_call = .TRUE.
             debug_capture_next = .TRUE.
 
@@ -1383,10 +1391,11 @@ contains
 
          xp = (xd%x_plane(i-1) + abs(dx))/u%D_rotor
 
-         AA = 0.0_ReKi
+         ! Initialize banded matrix
+         AB = 0.0_ReKi
 
          do II = 1, N
-            AA(II,II) = 1.0_ReKi
+            AB(KL+KU+1,II) = 1.0_ReKi
          enddo
 
          rhs = 0.0_ReKi
@@ -1553,59 +1562,63 @@ contains
 
                endif
 
+               ! Store five stencil coefficients in LAPACK band format
                JJ = II - Ny
-               AA(II,JJ) = a
+               AB(KL+KU+1+II-JJ,JJ) = a
 
                JJ = II
-               AA(II,JJ) = b
+               AB(KL+KU+1+II-JJ,JJ) = b
 
                JJ = II + Ny
-               AA(II,JJ) = c
+               AB(KL+KU+1+II-JJ,JJ) = c
 
                JJ = II - 1
-               AA(II,JJ) = d
+               AB(KL+KU+1+II-JJ,JJ) = d
 
                JJ = II + 1
-               AA(II,JJ) = e
+               AB(KL+KU+1+II-JJ,JJ) = e
 
                rhs(II) = rhs(II) + rhs_term
 
             enddo
          enddo
 
-         ! Dump assembled matrix and RHS
+         ! Dump assembled banded matrix and RHS
          if (debug_this_call) then
 
             write(debug_unit,*)
             write(debug_unit,*) '======================================'
-            write(debug_unit,*) 'SPARSE MATRIX BEFORE SGESV'
+            write(debug_unit,*) 'BANDED MATRIX BEFORE SGBSV'
             write(debug_unit,*) 'ROW  COLUMN  VALUE'
             write(debug_unit,*) '======================================'
 
             do dbg_row = 1, N
-               do dbg_col = 1, N
-                  if (AA(dbg_row,dbg_col) /= 0.0_ReKi) then
+               do dbg_col = max(1,dbg_row-KU), min(N,dbg_row+KL)
+
+                  if (AB(KL+KU+1+dbg_row-dbg_col,dbg_col) /= 0.0_ReKi) then
                      write(debug_unit,'(I8,1X,I8,1X,ES24.16E3)') &
-                        dbg_row, dbg_col, AA(dbg_row,dbg_col)
+                        dbg_row, dbg_col, &
+                        AB(KL+KU+1+dbg_row-dbg_col,dbg_col)
                   endif
+
                enddo
             enddo
 
-            write(debug_unit,*) '--- RHS BEFORE SGESV ---'
+            write(debug_unit,*) '--- RHS BEFORE SGBSV ---'
             do dbg_row = 1, N
                write(debug_unit,*) dbg_row, rhs(dbg_row)
             enddo
 
          endif
 
-         ! Solve
-         call SGESV(N,1,AA,N,ipiv,rhs,N,info)
+         ! Solve banded system
+         call SGBSV(N,KL,KU,1,AB,LDAB,ipiv,rhs,N,info)
 
          if (debug_this_call) then
 
             write(debug_unit,*)
             write(debug_unit,*) '======================================'
-            write(debug_unit,*) 'SGESV RESULTS'
+            write(debug_unit,*) 'SGBSV RESULTS'
             write(debug_unit,*) '======================================'
 
             write(debug_unit,*) 'info = ', info
@@ -1615,18 +1628,10 @@ contains
                write(debug_unit,*) dbg_row, rhs(dbg_row)
             enddo
 
-            write(debug_unit,*) '--- SPARSE LU FACTORIZATION MATRIX ---'
-            write(debug_unit,*) 'ROW  COLUMN  VALUE'
+         endif
 
-            do dbg_row = 1, N
-               do dbg_col = 1, N
-                  if (AA(dbg_row,dbg_col) /= 0.0_ReKi) then
-                     write(debug_unit,'(I8,1X,I8,1X,ES24.16E3)') &
-                        dbg_row, dbg_col, AA(dbg_row,dbg_col)
-                  endif
-               enddo
-            enddo
-
+         if (info /= 0) then
+            call ProgAbort('updateVelocityCartesianFD: SGBSV failed.')
          endif
 
          ! Unstack solution
@@ -1671,8 +1676,9 @@ contains
 
       endif
 
-      ! Advance elapsed simulation time
       debug_elapsed_time = debug_elapsed_time + p%DT_low
+
+      deallocate(AB, rhs, ipiv)
 
    end subroutine updateVelocityCartesianFD
 

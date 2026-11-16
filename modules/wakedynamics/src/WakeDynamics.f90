@@ -1248,32 +1248,45 @@ contains
    end subroutine updateVelocityPolarFE
 
 
-   !> 
+
+   !>
    subroutine updateVelocityCartesianFD()
 
       integer(intKi) :: iy, iz, i
       integer(intKi) :: II, JJ
       integer(intKi) :: N
       integer(intKi) :: info
-      real(ReKi), allocatable    :: AA(:,:), rhs(:)
+      real(ReKi), allocatable :: AA(:,:), rhs(:)
       integer(IntKi), allocatable :: ipiv(:)
-      integer(intKi) :: iyMin
-      integer(intKi) :: izMin
+      integer(intKi) :: iyMin, izMin
       real(ReKi) :: a, b, c, d, e
       real(ReKi) :: rhs_term
       real(ReKi) :: advection
       real(ReKi) :: divTau
-      real(ReKi) :: dy
-      real(ReKi) :: dz
+      real(ReKi) :: dy, dz
       real(ReKi) :: SyU, SzU, SyV, SzV, SyW, SzW
       real(ReKi) :: UU, VV, WW
       real(ReKi) :: xp
-      ! Plane dimensions
       integer(intKi) :: Ny, Nz
 
-      Ny = 2*p%NumRadii - 1  
-      Nz = 2*p%NumRadii - 1  
+      ! Debug variables
+      integer :: debug_unit
+      integer :: ios
+      integer(intKi) :: dbg_iy, dbg_iz, dbg_row, dbg_col
 
+      integer, save :: debug_dump_count = 0
+      integer, save :: debug_target_index = 1
+
+      real(ReKi), save :: debug_elapsed_time = 0.0_ReKi
+      real(ReKi), parameter :: debug_target_times(3) = &
+         (/ 0.0_ReKi, 3.0_ReKi, 6.0_ReKi /)
+
+      logical, save :: debug_capture_next = .FALSE.
+      logical :: debug_this_call
+      logical :: debug_dir_exists
+
+      Ny = 2*p%NumRadii - 1
+      Nz = 2*p%NumRadii - 1
       N = Ny*Nz
 
       ! Allocate matrix and vectors
@@ -1281,26 +1294,103 @@ contains
       allocate(rhs(N))
       allocate(ipiv(N))
 
+      ! --------------------------------------------------
+      ! SELECT DEBUG CAPTURES
+      ! Two consecutive calls at 0, 3, and 6 seconds
+      ! --------------------------------------------------
+
+      debug_this_call = .FALSE.
+
+      if (debug_capture_next) then
+
+         ! Second frame in the current pair
+         debug_this_call = .TRUE.
+         debug_capture_next = .FALSE.
+         debug_target_index = debug_target_index + 1
+
+      else if (debug_target_index <= 3) then
+
+         if (debug_elapsed_time >= debug_target_times(debug_target_index)) then
+
+            ! First frame in the current pair
+            debug_this_call = .TRUE.
+            debug_capture_next = .TRUE.
+
+         endif
+
+      endif
+
+      ! --------------------------------------------------
+      ! OPEN DEBUG FILE
+      ! --------------------------------------------------
+
+      if (debug_this_call) then
+
+         inquire(file='debug/.', exist=debug_dir_exists)
+
+         if (.NOT. debug_dir_exists) then
+            call execute_command_line('mkdir -p debug', exitstat=ios)
+
+            if (ios /= 0) then
+               print *, 'WARNING: Could not create debug directory.'
+            endif
+         endif
+
+         if (debug_dump_count == 0) then
+            open(newunit=debug_unit, file='debug/debug_dump.txt', &
+               status='replace', action='write', iostat=ios)
+         else
+            open(newunit=debug_unit, file='debug/debug_dump.txt', &
+               status='old', position='append', action='write', iostat=ios)
+         endif
+
+         if (ios /= 0) then
+            print *, 'WARNING: Could not open debug/debug_dump.txt'
+            debug_this_call = .FALSE.
+         else
+
+            write(debug_unit,*)
+            write(debug_unit,*) '======================================'
+            write(debug_unit,*) 'updateVelocityCartesianFD DEBUG DUMP'
+            write(debug_unit,*) 'DEBUG CALL NUMBER: ', debug_dump_count + 1
+            write(debug_unit,*) 'DEBUG ELAPSED TIME (s): ', debug_elapsed_time
+            write(debug_unit,*) 'DEBUG TARGET INDEX: ', debug_target_index
+            write(debug_unit,*) '======================================'
+
+            write(debug_unit,*) 'maxPln = ', maxPln
+            write(debug_unit,*) 'NumRadii = ', p%NumRadii
+            write(debug_unit,*) 'Ny = ', Ny
+            write(debug_unit,*) 'Nz = ', Nz
+            write(debug_unit,*) 'N = ', N
+            write(debug_unit,*) 'DT_low = ', p%DT_low
+            write(debug_unit,*) 'dr = ', p%dr
+
+         endif
+
+      endif
+
+      ! --------------------------------------------------
+      ! ORIGINAL NUMERICAL CALCULATIONS
+      ! --------------------------------------------------
+
       do i = maxPln, 1, -1
 
-         ! get all deltas you need for FD
          dy = p%dr
          dz = p%dr
-         ! NOTE: we cannot use data at i here since positions of planes have not been updated yet
-         dx = abs(dot_product(xd%xhat_plane(:,i-1),xd%V_plane_filt(:,i-1))*p%DT_low)
-         !xp = xd%p_plane(1,i-1)/u%D_rotor ! Current plane downstream x position in D
-         xp = (xd%x_plane(i-1) + abs(dx))/u%D_rotor 
 
-         ! Reset matrix
+         dx = abs(dot_product(xd%xhat_plane(:,i-1), &
+                              xd%V_plane_filt(:,i-1))*p%DT_low)
+
+         xp = (xd%x_plane(i-1) + abs(dx))/u%D_rotor
+
          AA = 0.0_ReKi
 
          do II = 1, N
             AA(II,II) = 1.0_ReKi
-         end do
+         enddo
 
          rhs = 0.0_ReKi
 
-         ! Offload the slopes here
          if (allocated(u%SV_Slopes)) then
             SyU = u%SV_Slopes(1,i-1)
             SzU = u%SV_Slopes(2,i-1)
@@ -1317,153 +1407,277 @@ contains
             SzW = 0.0_ReKi
          endif
 
-         ! d(nu)/dy and d(nu)/dz
-         call gradient_y( m%vt_tot2(:,:,i-1), p%dr, m%dnu_dy(:,:,i-1) )
-         call gradient_z( m%vt_tot2(:,:,i-1), p%dr, m%dnu_dz(:,:,i-1) )
+         ! Dump plane inputs
+         if (debug_this_call) then
 
-         !--------------------------------------------
-         ! Assemble A*V = rhs for this x-plane
-         !--------------------------------------------
+            write(debug_unit,*)
+            write(debug_unit,*) '======================================'
+            write(debug_unit,*) 'PLANE i = ', i
+            write(debug_unit,*) '======================================'
+
+            write(debug_unit,*) 'dx = ', dx
+            write(debug_unit,*) 'xp = ', xp
+            write(debug_unit,*) 'dy = ', dy
+            write(debug_unit,*) 'dz = ', dz
+
+            write(debug_unit,*) 'SyU SzU SyV SzV SyW SzW'
+            write(debug_unit,*) SyU, SzU, SyV, SzV, SyW, SzW
+
+            write(debug_unit,*) 'Vx_wind_disk_filt = ', &
+                                 xd%Vx_wind_disk_filt(i-1)
+
+            write(debug_unit,*) 'xhat_plane = ', xd%xhat_plane(:,i-1)
+            write(debug_unit,*) 'V_plane_filt = ', xd%V_plane_filt(:,i-1)
+
+            write(debug_unit,*) '--- INPUT FIELD: vt_tot2 ---'
+            do dbg_iz = lbound(m%vt_tot2,2), ubound(m%vt_tot2,2)
+               do dbg_iy = lbound(m%vt_tot2,1), ubound(m%vt_tot2,1)
+                  write(debug_unit,*) dbg_iy, dbg_iz, &
+                                    m%vt_tot2(dbg_iy,dbg_iz,i-1)
+               enddo
+            enddo
+
+         endif
+
+         ! Calculate gradients
+         call gradient_y(m%vt_tot2(:,:,i-1), p%dr, m%dnu_dy(:,:,i-1))
+         call gradient_z(m%vt_tot2(:,:,i-1), p%dr, m%dnu_dz(:,:,i-1))
+
+         if (debug_this_call) then
+
+            write(debug_unit,*) '--- GRADIENT: dnu_dy ---'
+            do dbg_iz = lbound(m%dnu_dy,2), ubound(m%dnu_dy,2)
+               do dbg_iy = lbound(m%dnu_dy,1), ubound(m%dnu_dy,1)
+                  write(debug_unit,*) dbg_iy, dbg_iz, &
+                                    m%dnu_dy(dbg_iy,dbg_iz,i-1)
+               enddo
+            enddo
+
+            write(debug_unit,*) '--- GRADIENT: dnu_dz ---'
+            do dbg_iz = lbound(m%dnu_dz,2), ubound(m%dnu_dz,2)
+               do dbg_iy = lbound(m%dnu_dz,1), ubound(m%dnu_dz,1)
+                  write(debug_unit,*) dbg_iy, dbg_iz, &
+                                    m%dnu_dz(dbg_iy,dbg_iz,i-1)
+               enddo
+            enddo
+
+            write(debug_unit,*) '--- INPUT FIELD: Vx_wake2 ---'
+            do dbg_iz = lbound(xd%Vx_wake2,2), ubound(xd%Vx_wake2,2)
+               do dbg_iy = lbound(xd%Vx_wake2,1), ubound(xd%Vx_wake2,1)
+                  write(debug_unit,*) dbg_iy, dbg_iz, &
+                                    xd%Vx_wake2(dbg_iy,dbg_iz,i-1)
+               enddo
+            enddo
+
+         endif
+
+         ! Assemble A*V = rhs
          do iz = -p%NumRadii+2, p%NumRadii-2
             do iy = -p%NumRadii+2, p%NumRadii-2
 
-               UU = xd%Vx_wind_disk_filt(i-1)+SyU*p%y(iy) + SzU*p%z(iz)
-               VV = SyV*p%y(iy) + SzV*p%z(iz) !p%y(iy)
+               UU = xd%Vx_wind_disk_filt(i-1) + SyU*p%y(iy) + SzU*p%z(iz)
+               VV = SyV*p%y(iy) + SzV*p%z(iz)
                WW = SyW*p%y(iy) + SzW*p%z(iz)
 
-               ! Row associated with this grid point
-               iyMin = -p%NumRadii+1 ; izMin = -p%NumRadii+1
+               iyMin = -p%NumRadii+1
+               izMin = -p%NumRadii+1
 
-               ! maybe remove + 1
                II = (iy - iyMin)*Ny + (iz - izMin)
 
-               !----------------------------------------
-               ! Compute coefficients from your stencil
-               !----------------------------------------
-               !
-               a = - (1/(4*dy))*VV + (1/(4*dy))*m%dnu_dy(iy,iz,i-1) - m%vt_tot2(iy,iz,i-1)/(2*dy**2)
-               b = UU/dx + m%vt_tot2(iy,iz,i-1)/(dy**2) + m%vt_tot2(iy,iz,i-1)/(dz**2)
-               c = + (1/(4*dy))*VV - (1/(4*dy))*m%dnu_dy(iy,iz,i-1) - m%vt_tot2(iy,iz,i-1)/(2*dy**2)
-               d = - (1/(4*dz))*WW + (1/(4*dz))*m%dnu_dz(iy,iz,i-1) - m%vt_tot2(iy,iz,i-1)/(2*dz**2)
-               e = + (1/(4*dz))*WW - (1/(4*dz))*m%dnu_dz(iy,iz,i-1) - m%vt_tot2(iy,iz,i-1)/(2*dz**2)
-               advection = -VV * SyU - WW * SzU
-               
-               ! Eddy viscosity term
-               ! divTau = m%dnuvx_dy(iy,iz) + m%dnuvx_dz(iy,iz) &
-               !   + m%dnu_dy(iy,iz,i-1) * SyU &
-               !   + m%dnu_dz(iy,iz,i-1) * SzU
+               a = -(1/(4*dy))*VV + (1/(4*dy))*m%dnu_dy(iy,iz,i-1) &
+                  - m%vt_tot2(iy,iz,i-1)/(2*dy**2)
 
-               ! Assuming 2nd order terms are negligible for linear shear
-               divTau = m%dnu_dy(iy,iz,i-1) * SyU &
-                  + m%dnu_dz(iy,iz,i-1) * SzU
+               b = UU/dx + m%vt_tot2(iy,iz,i-1)/(dy**2) &
+                  + m%vt_tot2(iy,iz,i-1)/(dz**2)
 
-               
-               rhs_term = (((1/(4*dy))*VV - (1/(4*dy))*m%dnu_dy(iy,iz,i-1) + m%vt_tot2(iy,iz,i-1)/(2*dy**2))*xd%Vx_wake2(iy-1,iz,i-1) + &
-                           (UU/dx - m%vt_tot2(iy,iz,i-1)/(dy**2) - m%vt_tot2(iy,iz,i-1)/(dz**2))*xd%Vx_wake2(iy,iz,i-1) + &
-                           (- (1/(4*dy))*VV + (1/(4*dy))*m%dnu_dy(iy,iz,i-1) + m%vt_tot2(iy,iz,i-1)/(2*dy**2))*xd%Vx_wake2(iy+1,iz,i-1) + &
-                           ((1/(4*dz))*WW + (1/(4*dz))*m%dnu_dz(iy,iz,i-1) - m%vt_tot2(iy,iz,i-1)/(2*dz**2))*xd%Vx_wake2(iy,iz-1,i-1) + &
-                           ((1/(4*dz))*WW - (1/(4*dz))*m%dnu_dz(iy,iz,i-1) - m%vt_tot2(iy,iz,i-1)/(2*dz**2))*xd%Vx_wake2(iy,iz+1,i-1) + &
-                           advection + divTau &
-                           )
+               c = +(1/(4*dy))*VV - (1/(4*dy))*m%dnu_dy(iy,iz,i-1) &
+                  - m%vt_tot2(iy,iz,i-1)/(2*dy**2)
 
-               ! iy-1  
+               d = -(1/(4*dz))*WW + (1/(4*dz))*m%dnu_dz(iy,iz,i-1) &
+                  - m%vt_tot2(iy,iz,i-1)/(2*dz**2)
+
+               e = +(1/(4*dz))*WW - (1/(4*dz))*m%dnu_dz(iy,iz,i-1) &
+                  - m%vt_tot2(iy,iz,i-1)/(2*dz**2)
+
+               advection = -VV*SyU - WW*SzU
+
+               divTau = m%dnu_dy(iy,iz,i-1)*SyU &
+                     + m%dnu_dz(iy,iz,i-1)*SzU
+
+               rhs_term = ( &
+                  ((1/(4*dy))*VV - (1/(4*dy))*m%dnu_dy(iy,iz,i-1) &
+                  + m%vt_tot2(iy,iz,i-1)/(2*dy**2)) &
+                  * xd%Vx_wake2(iy-1,iz,i-1) + &
+
+                  (UU/dx - m%vt_tot2(iy,iz,i-1)/(dy**2) &
+                  - m%vt_tot2(iy,iz,i-1)/(dz**2)) &
+                  * xd%Vx_wake2(iy,iz,i-1) + &
+
+                  (-(1/(4*dy))*VV + (1/(4*dy))*m%dnu_dy(iy,iz,i-1) &
+                  + m%vt_tot2(iy,iz,i-1)/(2*dy**2)) &
+                  * xd%Vx_wake2(iy+1,iz,i-1) + &
+
+                  ((1/(4*dz))*WW + (1/(4*dz))*m%dnu_dz(iy,iz,i-1) &
+                  - m%vt_tot2(iy,iz,i-1)/(2*dz**2)) &
+                  * xd%Vx_wake2(iy,iz-1,i-1) + &
+
+                  ((1/(4*dz))*WW - (1/(4*dz))*m%dnu_dz(iy,iz,i-1) &
+                  - m%vt_tot2(iy,iz,i-1)/(2*dz**2)) &
+                  * xd%Vx_wake2(iy,iz+1,i-1) + &
+
+                  advection + divTau )
+
+               if (debug_this_call) then
+
+                  write(debug_unit,*)
+                  write(debug_unit,*) '--- GRID POINT ---'
+                  write(debug_unit,*) 'iy iz = ', iy, iz
+                  write(debug_unit,*) 'II = ', II
+
+                  write(debug_unit,*) 'UU VV WW = ', UU, VV, WW
+                  write(debug_unit,*) 'a b c d e = ', a, b, c, d, e
+                  write(debug_unit,*) 'advection = ', advection
+                  write(debug_unit,*) 'divTau = ', divTau
+                  write(debug_unit,*) 'rhs_term = ', rhs_term
+
+                  write(debug_unit,*) 'Vx_wake2 center = ', &
+                                    xd%Vx_wake2(iy,iz,i-1)
+                  write(debug_unit,*) 'Vx_wake2 iy-1 = ', &
+                                    xd%Vx_wake2(iy-1,iz,i-1)
+                  write(debug_unit,*) 'Vx_wake2 iy+1 = ', &
+                                    xd%Vx_wake2(iy+1,iz,i-1)
+                  write(debug_unit,*) 'Vx_wake2 iz-1 = ', &
+                                    xd%Vx_wake2(iy,iz-1,i-1)
+                  write(debug_unit,*) 'Vx_wake2 iz+1 = ', &
+                                    xd%Vx_wake2(iy,iz+1,i-1)
+
+               endif
+
                JJ = II - Ny
-               
-               !print *, 'DEBUG AA ACCESS:'
-               !print *, '  II    = ', II
-               !print *, '  JJ    = ', JJ
-               !print *, '  iz    = ', iz
-               !print *, '  izMin = ', izMin
-               !print *, '  iy    = ', iy
-               !print *, '  iyMin = ', iyMin
-               !print *, '  Ny    = ', Ny
-               !print *, '  a     = ', a
-               !print *, '  AA bounds: ', lbound(AA,1), ubound(AA,1), &
-               !                        lbound(AA,2), ubound(AA,2)
-               !call flush(6)
+               AA(II,JJ) = a
 
-               AA(II,JJ) =  a
-
-               ! center
                JJ = II
-               AA(II,JJ) =  b
+               AA(II,JJ) = b
 
-               ! iy+1 
                JJ = II + Ny
-               AA(II,JJ) =  c
+               AA(II,JJ) = c
 
-               ! iz-1 
                JJ = II - 1
-               AA(II,JJ) =  d
+               AA(II,JJ) = d
 
-               ! iz+1
                JJ = II + 1
-               AA(II,JJ) =  e
+               AA(II,JJ) = e
 
                rhs(II) = rhs(II) + rhs_term
 
+            enddo
+         enddo
 
-            end do
-         end do
+         ! Dump assembled matrix and RHS
+         if (debug_this_call) then
 
+            write(debug_unit,*)
+            write(debug_unit,*) '======================================'
+            write(debug_unit,*) 'SPARSE MATRIX BEFORE SGESV'
+            write(debug_unit,*) 'ROW  COLUMN  VALUE'
+            write(debug_unit,*) '======================================'
 
-         !--------------------------------------------
-         ! Solve A*V = rhs
-         ! rhs is overwritten with solution
-         !--------------------------------------------
+            do dbg_row = 1, N
+               do dbg_col = 1, N
+                  if (AA(dbg_row,dbg_col) /= 0.0_ReKi) then
+                     write(debug_unit,'(I8,1X,I8,1X,ES24.16E3)') &
+                        dbg_row, dbg_col, AA(dbg_row,dbg_col)
+                  endif
+               enddo
+            enddo
 
-         ! Solve the linear system A*x = rhs using LU factorization with partial pivoting
-         ! On input:
-         !   A    = coefficient matrix (N x N)
-         !   rhs  = right-hand side vector
-         !   ipiv = integer array for pivoting information
-         ! After the call:
-         !   rhs  = solution vector x (overwritten)
-         !   A    = overwritten with LU factors
-         !   info = 0 if successful, >0 if matrix is singular
+            write(debug_unit,*) '--- RHS BEFORE SGESV ---'
+            do dbg_row = 1, N
+               write(debug_unit,*) dbg_row, rhs(dbg_row)
+            enddo
 
-         ! print *, '================ BEFORE DGESV ================'
-         ! print *, 'N       = ', N
-         ! print *, 'Ny      = ', Ny
-         ! print *, 'Nz      = ', Nz
-         ! print *, 'AA size = ', size(AA,1), size(AA,2)
-         ! print *, 'rhs size= ', size(rhs)
-         ! print *, 'ipiv size=', size(ipiv)
-         ! print *, 'AA(1,1)   = ', AA(1,1)
-         ! print *, 'AA(N,N)   = ', AA(N,N)
-         ! print *, 'rhs(1)    = ', rhs(1)
-         ! print *, 'rhs(N)    = ', rhs(N)
-         ! print *, 'max |AA|  = ', maxval(abs(AA))
-         ! print *, 'max |rhs| = ', maxval(abs(rhs))
-         ! call flush(6)
+         endif
 
-         ! print *, 'REACHED sGESV'
-         ! call flush(6)
-
+         ! Solve
          call SGESV(N,1,AA,N,ipiv,rhs,N,info)
 
-         ! print *, 'sGESV RETURNED, INFO = ', info
-         ! call flush(6)
-         !--------------------------------------------
-         ! Unstack solution back to Vx_wake2
-         !--------------------------------------------
+         if (debug_this_call) then
 
+            write(debug_unit,*)
+            write(debug_unit,*) '======================================'
+            write(debug_unit,*) 'SGESV RESULTS'
+            write(debug_unit,*) '======================================'
+
+            write(debug_unit,*) 'info = ', info
+
+            write(debug_unit,*) '--- SOLUTION RHS ---'
+            do dbg_row = 1, N
+               write(debug_unit,*) dbg_row, rhs(dbg_row)
+            enddo
+
+            write(debug_unit,*) '--- SPARSE LU FACTORIZATION MATRIX ---'
+            write(debug_unit,*) 'ROW  COLUMN  VALUE'
+
+            do dbg_row = 1, N
+               do dbg_col = 1, N
+                  if (AA(dbg_row,dbg_col) /= 0.0_ReKi) then
+                     write(debug_unit,'(I8,1X,I8,1X,ES24.16E3)') &
+                        dbg_row, dbg_col, AA(dbg_row,dbg_col)
+                  endif
+               enddo
+            enddo
+
+         endif
+
+         ! Unstack solution
          do iz = -p%NumRadii+2, p%NumRadii-2
             do iy = -p%NumRadii+2, p%NumRadii-2
 
-               ! remove + 1
                II = (iy - iyMin)*Ny + (iz - izMin)
 
                xd%Vx_wake2(iy,iz,i) = rhs(II)
 
-            end do
-         end do
+            enddo
+         enddo
 
+         if (debug_this_call) then
 
-      end do ! i
+            write(debug_unit,*)
+            write(debug_unit,*) '--- OUTPUT Vx_wake2 ---'
 
+            do dbg_iz = lbound(xd%Vx_wake2,2), ubound(xd%Vx_wake2,2)
+               do dbg_iy = lbound(xd%Vx_wake2,1), ubound(xd%Vx_wake2,1)
+                  write(debug_unit,*) dbg_iy, dbg_iz, &
+                                    xd%Vx_wake2(dbg_iy,dbg_iz,i)
+               enddo
+            enddo
+
+         endif
+
+      enddo
+
+      ! --------------------------------------------------
+      ! CLOSE DEBUG FILE AND UPDATE COUNTERS
+      ! --------------------------------------------------
+
+      if (debug_this_call) then
+
+         write(debug_unit,*)
+         write(debug_unit,*) 'END OF DEBUG CALL ', debug_dump_count + 1
+
+         close(debug_unit)
+
+         debug_dump_count = debug_dump_count + 1
+
+      endif
+
+      ! Advance elapsed simulation time
+      debug_elapsed_time = debug_elapsed_time + p%DT_low
 
    end subroutine updateVelocityCartesianFD
+
+
+
 
    !> 
    ! ONly used with curl before
